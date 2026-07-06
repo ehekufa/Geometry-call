@@ -1,0 +1,116 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache NDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+          key: ndk-25.2.9519653-v5
+
+      - name: Install NDK
+        run: |
+          if [ ! -d "$ANDROID_HOME/ndk/25.2.9519653" ]; then
+            yes | sdkmanager "ndk;25.2.9519653"
+          fi
+
+      - name: Set NDK environment
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      - name: Cache love-android source
+        uses: actions/cache@v4
+        with:
+          path: love-android
+          key: love-android-src-v5
+
+      - name: Clone love-android
+        run: |
+          if [ ! -f "love-android/gradlew" ]; then
+            git clone --recursive --depth 1 https://github.com/love2d/love-android.git
+          fi
+
+      - name: Change package name
+        run: |
+          # Меняем package name на com.geometrycall (или своё)
+          sed -i 's/applicationId "org.love2d.android"/applicationId "com.geometrycall"/g' love-android/app/build.gradle
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-v5
+
+      - name: Cache native build
+        uses: actions/cache@v4
+        with:
+          path: |
+            love-android/app/.cxx
+            love-android/app/build
+          key: native-v5
+
+      - name: Package game.love
+        run: |
+          zip -9 -r game.love . -x "*.git*" -x ".github/*" -x "love-android/*" -x "*.yml"
+
+      - name: Embed game into Android project
+        run: |
+          mkdir -p love-android/app/src/embed/assets
+          cp game.love love-android/app/src/embed/assets/game.love
+
+      - name: Force arm64 only (optional)
+        run: |
+          sed -i '/abiFilters/d' love-android/app/build.gradle
+          sed -i '/defaultConfig {/a\        ndk { abiFilters "arm64-v8a" }' love-android/app/build.gradle
+
+      - name: Optimize Gradle
+        run: |
+          cat >> love-android/gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx6g
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.daemon=false
+          EOF
+
+      - name: Build Debug APK
+        working-directory: love-android
+        run: ./gradlew assembleEmbedNoRecordDebug --no-daemon --parallel --console=plain
+
+      - name: Collect APK
+        id: set-output
+        run: |
+          APK=$(find love-android -name "*.apk" | head -1)
+          APK_NAME="GeometryDashClone_Debug_$(date +'%Y%m%d_%H%M').apk"
+          cp "$APK" "$APK_NAME"
+          echo "apk-name=$APK_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeometryDashClone_APK
+          path: GeometryDashClone_Debug_*.apk
+          compression-level: 0
